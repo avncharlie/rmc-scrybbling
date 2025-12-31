@@ -19,9 +19,14 @@ from .writing_tools import Pen
 
 _logger = logging.getLogger(__name__)
 
-SCREEN_WIDTH = 1404
-SCREEN_HEIGHT = 1872
-SCREEN_DPI = 226
+# SCREEN_WIDTH = 1404
+# SCREEN_HEIGHT = 1872
+# SCREEN_DPI = 226
+
+# Use RMPP dimensions
+SCREEN_WIDTH = 1620
+SCREEN_HEIGHT = 2160
+SCREEN_DPI = 229
 
 TEXT_DOCUMENT_TOP_Y_CRDT_ID = 0xfffffffffffe
 TEXT_DOCUMENT_BOTTOM_Y_CRDT_ID = 0xffffffffffff

@@ -141,8 +141,11 @@ def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None):
     _logger.debug("anchor_pos: %s", anchor_pos)
     _logger.debug("newline_offsets: %s", newline_offsets)
 
+    # Get text_pos_x for TEXT_CHAR anchor calculations
+    text_pos_x = tree.root_text.pos_x if tree.root_text is not None else None
+
     # find the extremum along x and y (for strokes)
-    x_min, x_max, y_min, y_max = get_bounding_box(tree.root, anchor_pos, newline_offsets)
+    x_min, x_max, y_min, y_max = get_bounding_box(tree.root, anchor_pos, newline_offsets, text_pos_x)
     
     # Also include text bounds
     txt_x_min, txt_x_max, txt_y_min, txt_y_max = get_text_bounding_box(tree.root_text)
@@ -172,7 +175,7 @@ def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None):
     if tree.root_text is not None:
         draw_text(tree.root_text, output)
 
-    draw_group(tree.root, output, anchor_pos, newline_offsets)
+    draw_group(tree.root, output, anchor_pos, newline_offsets, text_pos_x)
 
     # Closing page group
     output.write('\t</g>\n')
@@ -259,7 +262,7 @@ def build_anchor_pos(text: tp.Optional[si.Text]) -> tp.Tuple[tp.Dict[CrdtId, int
     return anchor_pos, newline_offsets
 
 
-def get_anchor(item: si.Group, anchor_pos, newline_offsets=None):
+def get_anchor(item: si.Group, anchor_pos, newline_offsets=None, text_pos_x=None):
     """
     Get the anchor position for a group.
     
@@ -268,6 +271,7 @@ def get_anchor(item: si.Group, anchor_pos, newline_offsets=None):
     :param newline_offsets: Map of newline CrdtIds -> offset to subtract.
         When a stroke is anchored to a newline character, it should be
         positioned at the PREVIOUS line, so we subtract the line height.
+    :param text_pos_x: X position of text block, used for TEXT_CHAR anchors (anchor_type=1)
     """
     if newline_offsets is None:
         newline_offsets = {}
@@ -277,6 +281,19 @@ def get_anchor(item: si.Group, anchor_pos, newline_offsets=None):
     if item.anchor_id is not None:
         assert item.anchor_origin_x is not None
         anchor_x = item.anchor_origin_x.value
+        
+        # For TEXT_CHAR anchors (anchor_type=1), check if we need to add text block's X position.
+        # If anchor_origin_x is exactly 0, the stroke is positioned relative to the text block.
+        # If anchor_origin_x has any other value, it's already in screen coordinates.
+        if item.anchor_type is not None and item.anchor_type.value == 1 and text_pos_x is not None:
+            if anchor_x == 0:
+                anchor_x = text_pos_x
+                _logger.debug("TEXT_CHAR anchor (relative): using text_pos_x=%.1f",
+                              text_pos_x)
+            else:
+                _logger.debug("TEXT_CHAR anchor (absolute): anchor_origin_x=%.1f already in screen coords",
+                              anchor_x)
+        
         if item.anchor_id.value in anchor_pos:
             anchor_y = anchor_pos[item.anchor_id.value]
             
@@ -301,6 +318,7 @@ def get_anchor(item: si.Group, anchor_pos, newline_offsets=None):
 def get_bounding_box(item: si.Group,
                      anchor_pos: tp.Dict[CrdtId, int],
                      newline_offsets: tp.Dict[CrdtId, int] = None,
+                     text_pos_x: float = None,
                      default: tp.Tuple[int, int, int, int] = (- SCREEN_WIDTH // 2, SCREEN_WIDTH // 2, 0, SCREEN_HEIGHT)) \
         -> tp.Tuple[int, int, int, int]:
     """
@@ -317,8 +335,8 @@ def get_bounding_box(item: si.Group,
     for child_id in item.children:
         child = item.children[child_id]
         if isinstance(child, si.Group):
-            anchor_x, anchor_y = get_anchor(child, anchor_pos, newline_offsets)
-            x_min_t, x_max_t, y_min_t, y_max_t = get_bounding_box(child, anchor_pos, newline_offsets, (0, 0, 0, 0))
+            anchor_x, anchor_y = get_anchor(child, anchor_pos, newline_offsets, text_pos_x)
+            x_min_t, x_max_t, y_min_t, y_max_t = get_bounding_box(child, anchor_pos, newline_offsets, text_pos_x, (0, 0, 0, 0))
             x_min = min(x_min, x_min_t + anchor_x)
             x_max = max(x_max, x_max_t + anchor_x)
             y_min = min(y_min, y_min_t + anchor_y)
@@ -332,10 +350,10 @@ def get_bounding_box(item: si.Group,
     return x_min, x_max, y_min, y_max
 
 
-def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None):
+def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_pos_x=None):
     if newline_offsets is None:
         newline_offsets = {}
-    anchor_x, anchor_y = get_anchor(item, anchor_pos, newline_offsets)
+    anchor_x, anchor_y = get_anchor(item, anchor_pos, newline_offsets, text_pos_x)
     output.write(f'\t\t<g id="{item.node_id}" transform="translate({xx(anchor_x)}, {yy(anchor_y)})">\n')
     for child_id in item.children:
         child = item.children[child_id]
@@ -343,7 +361,7 @@ def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None):
         if _logger.root.level == logging.DEBUG:
             output.write(f'\t\t<!-- child {child_id} {type(child)} -->\n')
         if isinstance(child, si.Group):
-            draw_group(child, output, anchor_pos, newline_offsets)
+            draw_group(child, output, anchor_pos, newline_offsets, text_pos_x)
         elif isinstance(child, si.Line):
             draw_stroke(child, output)
     output.write(f'\t\t</g>\n')

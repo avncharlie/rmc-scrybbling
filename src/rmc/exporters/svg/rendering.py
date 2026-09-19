@@ -140,7 +140,7 @@ def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_po
         anchor_soft_offset = {}
     anchor_x, anchor_y = get_anchor(item, anchor_pos, newline_offsets, text_pos_x, anchor_x_pos, anchor_soft_offset)
     output.write(f'\t\t<g id="{item.node_id}" transform="translate({rmc_config.xx(anchor_x)}, {rmc_config.yy(anchor_y)})">\n')
-    for child_id in item.children:
+    for child_id in _draw_order(item.children):
         child = item.children[child_id]
         _logger.debug("Group child: %s %s", child_id, type(child))
         if _logger.root.level == logging.DEBUG:
@@ -152,6 +152,42 @@ def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_po
         elif isinstance(child, si.Image):
             draw_image(child, output, assets)
     output.write(f'\t\t</g>\n')
+
+
+def _draw_order(children):
+    """Order a group's children back to front.
+
+    Editing an image on the device rewrites its placement as a new item with a
+    fresh item id and timestamp, so neither says where the image sits relative
+    to the strokes around it. What the device keeps is `left_id`: the item the
+    placement is anchored after. Ordering images by that, against the item ids
+    of everything else, reproduces the stacking the device draws — an image
+    moved on top of existing writing stays on top, and one that has always sat
+    under later writing stays under it.
+
+    `left_id` is only on the CRDT sequence item, not on the scene item, so it
+    comes from `sequence_items()` rather than from the values themselves.
+    """
+    left_ids = {}
+    try:
+        for seq_item in children.sequence_items():
+            left_ids[seq_item.item_id] = seq_item.left_id
+    except AttributeError:
+        # Not a CrdtSequence (a plain mapping in tests); fall back to ids.
+        pass
+
+    ordered = []
+    for pos, child_id in enumerate(children):
+        child = children[child_id]
+        key_id = child_id
+        if isinstance(child, si.Image) and child_id in left_ids:
+            key_id = left_ids[child_id]
+        # Images sort just after the item they are anchored to, so that an
+        # image and that item never collide on the same key.
+        tiebreak = 1 if isinstance(child, si.Image) else 0
+        ordered.append(((key_id.part2, key_id.part1, tiebreak), pos, child_id))
+    ordered.sort()
+    return [child_id for _, _, child_id in ordered]
 
 
 class MissingAssetError(Exception):

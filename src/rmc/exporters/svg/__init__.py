@@ -20,6 +20,9 @@ from .rendering import (
     SVG_HEADER,
     draw_text,
     draw_group,
+    draw_image,
+    resolve_asset_dir,
+    MissingAssetError,
 )
 
 # Import layout module functions
@@ -42,4 +45,7 @@ __all__ = [
     'SVG_HEADER',
     'draw_text',
     'draw_group',
+    'draw_image',
+    'resolve_asset_dir',
+    'MissingAssetError',
 ]

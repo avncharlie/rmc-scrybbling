@@ -57,15 +57,19 @@ SVG_HEADER = string.Template("""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" height="$height" width="$width" viewBox="$viewbox">""")
 
 
-def rm_to_svg(rm_path, svg_path):
+def rm_to_svg(rm_path, svg_path, assets=None):
     """Convert `rm_path` to SVG at `svg_path`.
 
     :param rm_path: Path to .rm file
     :param svg_path: Path to output SVG file
+    :param assets: Directory holding the page's image assets. Defaults to the
+        directory the device uses, alongside the .rm file.
     """
+    if assets is None:
+        assets = resolve_asset_dir(rm_path)
     with open(rm_path, "rb") as infile, open(svg_path, "wt") as outfile:
         tree = read_tree(infile)
-        tree_to_svg(tree, outfile)
+        tree_to_svg(tree, outfile, assets=assets)
 
 
 def read_template_svg(template_path: Path) -> str:
@@ -73,12 +77,14 @@ def read_template_svg(template_path: Path) -> str:
     return "\n".join(lines[2:-2])
 
 
-def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None):
+def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None, assets=None):
     """Convert Blocks to SVG.
 
     :param tree: The scene tree to convert
     :param output: Output file object to write SVG to
     :param include_template: Optional template SVG to include as background
+    :param assets: Directory holding the page's image assets, required if the
+        scene places any images
     """
 
     # find the anchor pos for further use
@@ -117,7 +123,7 @@ def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None):
     if tree.root_text is not None:
         draw_text(tree.root_text, output)
 
-    draw_group(tree.root, output, anchor_pos, newline_offsets, text_pos_x, anchor_x_pos, anchor_soft_offset)
+    draw_group(tree.root, output, anchor_pos, newline_offsets, text_pos_x, anchor_x_pos, anchor_soft_offset, assets)
 
     # Closing page group
     output.write('\t</g>\n')
@@ -125,7 +131,7 @@ def tree_to_svg(tree: SceneTree, output, include_template: Path | None = None):
     output.write('</svg>\n')
 
 
-def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_pos_x=None, anchor_x_pos=None, anchor_soft_offset=None):
+def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_pos_x=None, anchor_x_pos=None, anchor_soft_offset=None, assets=None):
     if newline_offsets is None:
         newline_offsets = {}
     if anchor_x_pos is None:
@@ -140,10 +146,113 @@ def draw_group(item: si.Group, output, anchor_pos, newline_offsets=None, text_po
         if _logger.root.level == logging.DEBUG:
             output.write(f'\t\t<!-- child {child_id} {type(child)} -->\n')
         if isinstance(child, si.Group):
-            draw_group(child, output, anchor_pos, newline_offsets, text_pos_x, anchor_x_pos, anchor_soft_offset)
+            draw_group(child, output, anchor_pos, newline_offsets, text_pos_x, anchor_x_pos, anchor_soft_offset, assets)
         elif isinstance(child, si.Line):
             draw_stroke(child, output)
+        elif isinstance(child, si.Image):
+            draw_image(child, output, assets)
     output.write(f'\t\t</g>\n')
+
+
+class MissingAssetError(Exception):
+    """A scene places an image whose backing file could not be read."""
+
+
+def resolve_asset_dir(rm_path) -> Path:
+    """Directory holding the image assets for the page at `rm_path`.
+
+    The device stores them in a directory named after the page, alongside the
+    page's own `.rm` file: `<documentId>/<pageId>/<imageId>.png`.
+    """
+    rm_path = Path(rm_path)
+    return rm_path.parent / rm_path.stem
+
+
+def _image_data_uri(item: si.Image, assets) -> str:
+    """Read the PNG backing `item` and return it as a base64 data URI.
+
+    Embedding the bytes keeps the SVG self-contained, which matters because it
+    is handed to Chrome or Cairo via a temporary file that does not sit next to
+    the original page directory.
+    """
+    filename = item.filename
+    if filename is None:
+        raise MissingAssetError(
+            "Image placement %s names asset %s, which the scene does not declare"
+            % (item.uuid.value.hex(), item.asset_id)
+        )
+    if assets is None:
+        raise MissingAssetError(
+            "Cannot render image %s: no asset directory was given. Pass the "
+            "page's asset directory through to the renderer." % filename
+        )
+    path = Path(assets) / filename
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise MissingAssetError("Could not read image asset %s: %s" % (path, exc)) from exc
+    if not data:
+        raise MissingAssetError("Image asset %s is empty" % path)
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+
+
+def draw_image(item: si.Image, output, assets):
+    """Draw an image ("capture") placed on the page.
+
+    The placement is a quad of four corners, each carrying scene coordinates
+    (`x`, `y`) and the texture coordinates (`u`, `v`) of the source image at
+    that corner. An axis-aligned placement maps the corners to 0/1 in both u
+    and v; a rotated or flipped one does not, so the quad is drawn by deriving
+    an affine transform from the corners rather than assuming a rectangle.
+    """
+    if not item.vertices:
+        _logger.warning("Image %s has no vertices to place; skipping", item.asset_id)
+        return
+
+    href = _image_data_uri(item, assets)
+
+    # Solve for the affine map taking texture space (u, v) to scene space
+    # (x, y), using the first corner as origin and the two edges leaving it.
+    origin = item.vertices[0]
+    edge_u = next((v for v in item.vertices[1:] if (v.u, v.v) != (origin.u, origin.v) and v.v == origin.v), None)
+    edge_v = next((v for v in item.vertices[1:] if (v.u, v.v) != (origin.u, origin.v) and v.u == origin.u), None)
+
+    if edge_u is None or edge_v is None or edge_u.u == origin.u or edge_v.v == origin.v:
+        # Degenerate uv layout: fall back to the axis-aligned bounding box so
+        # something recognisable still renders.
+        rect = item.bounding_rect()
+        _logger.warning(
+            "Image %s has an unexpected vertex layout; falling back to its bounding box",
+            item.asset_id,
+        )
+        output.write(
+            f'\t\t\t<image href="{href}" x="{rmc_config.xx(rect.x)}" y="{rmc_config.yy(rect.y)}"'
+            f' width="{rmc_config.xx(rect.w)}" height="{rmc_config.yy(rect.h)}"'
+            f' preserveAspectRatio="none"/>\n'
+        )
+        return
+
+    # Per unit of u and of v, in scene units.
+    du_x = (edge_u.x - origin.x) / (edge_u.u - origin.u)
+    du_y = (edge_u.y - origin.y) / (edge_u.u - origin.u)
+    dv_x = (edge_v.x - origin.x) / (edge_v.v - origin.v)
+    dv_y = (edge_v.y - origin.y) / (edge_v.v - origin.v)
+
+    # Scene position of (u, v) = (0, 0), which is where the image starts.
+    x0 = origin.x - du_x * origin.u - dv_x * origin.v
+    y0 = origin.y - du_y * origin.u - dv_y * origin.v
+
+    # The image is drawn into a 1x1 box and mapped onto the quad, so the
+    # transform carries all the scaling, rotation and flipping.
+    scale = rmc_config.scale
+    matrix = (
+        f"{du_x * scale} {du_y * scale} {dv_x * scale} {dv_y * scale} "
+        f"{rmc_config.xx(x0)} {rmc_config.yy(y0)}"
+    )
+    output.write(
+        f'\t\t\t<image href="{href}" x="0" y="0" width="1" height="1"'
+        f' preserveAspectRatio="none" transform="matrix({matrix})"/>\n'
+    )
 
 
 def draw_stroke(item: si.Line, output):

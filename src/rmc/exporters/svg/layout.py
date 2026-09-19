@@ -509,5 +509,13 @@ def get_bounding_box(item: si.Group,
             x_max = max([x_max] + [p.x for p in child.points])
             y_min = min([y_min] + [p.y for p in child.points])
             y_max = max([y_max] + [p.y for p in child.points])
+        elif isinstance(child, si.Image):
+            # Use the placement corners rather than bounding_rect(), so a
+            # rotated quad expands the page by its true extent.
+            if child.vertices:
+                x_min = min([x_min] + [v.x for v in child.vertices])
+                x_max = max([x_max] + [v.x for v in child.vertices])
+                y_min = min([y_min] + [v.y for v in child.vertices])
+                y_max = max([y_max] + [v.y for v in child.vertices])
 
     return x_min, x_max, y_min, y_max

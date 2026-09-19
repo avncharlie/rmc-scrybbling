@@ -182,7 +182,7 @@ def svg_to_pdf(svg_file, pdf_file, use_chrome: bool = True, chrome_loc: Optional
     svg_str = svg_file.getvalue()
     _svg_to_pdf(svg_str, pdf_file.name, use_chrome, chrome_loc)
 
-def rm_to_pdf(rm_path, pdf_path, use_chrome: bool = True, chrome_loc: Optional[str] = None):
+def rm_to_pdf(rm_path, pdf_path, use_chrome: bool = True, chrome_loc: Optional[str] = None, assets=None):
     """
     Convert .rm file to PDF.
 
@@ -190,9 +190,11 @@ def rm_to_pdf(rm_path, pdf_path, use_chrome: bool = True, chrome_loc: Optional[s
     :param pdf_path: Path to output PDF file
     :param use_chrome: If True, use Chrome when fonts are present; if False, always use Cairo
     :param chrome_loc: Optional explicit path to Chrome binary
+    :param assets: Directory holding the page's image assets; defaults to the
+        directory alongside the .rm file
     """
     with tempfile.NamedTemporaryFile(suffix=".svg", mode="w", delete=False) as f_temp:
-        rm_to_svg(rm_path, f_temp.name)
+        rm_to_svg(rm_path, f_temp.name, assets=assets)
         temp_svg_path = f_temp.name
 
     try:

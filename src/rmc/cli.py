@@ -7,7 +7,7 @@ from pathlib import Path
 from contextlib import contextmanager
 import click
 from rmscene import read_tree, read_blocks, write_blocks, simple_text_document
-from .exporters.svg import tree_to_svg, DEVICE_PROFILES
+from .exporters.svg import tree_to_svg, resolve_asset_dir, DEVICE_PROFILES
 from .exporters.pdf import svg_to_pdf
 from .exporters.markdown import print_text
 
@@ -142,11 +142,11 @@ def convert_rm(filename: Path, to, fout, no_chrome=False, chrome_loc=None):
             print_text(f, fout)
         elif to == "svg":
             tree = read_tree(f)
-            tree_to_svg(tree, fout)
+            tree_to_svg(tree, fout, assets=resolve_asset_dir(filename))
         elif to == "pdf":
             buf = io.StringIO()
             tree = read_tree(f)
-            tree_to_svg(tree, buf)
+            tree_to_svg(tree, buf, assets=resolve_asset_dir(filename))
             buf.seek(0)
             svg_to_pdf(buf, fout, use_chrome=not no_chrome, chrome_loc=chrome_loc)
         else:
